@@ -12,14 +12,18 @@
 (def mapa-modelos
   {"strada" "Strada", "onix" "Onix", "gol" "Gol", "hb20" "HB20",
    "compass" "Compass", "kwid" "Kwid", "t-cross" "T-Cross", "jeep" "Jeep",
-   "fiat" "Fiat", "chevrolet" "Chevrolet", "vw" "VW", "renault" "Renault"})
+   "fiat" "Fiat", "chevrolet" "Chevrolet", "vw" "VW", "renault" "Renault",
+   "montana" "Montana", "cruze" "Cruze", "spin" "Spin", "tracker" "Tracker"})
 
 ;; --- ETAPA 2: FUNÇÕES DE TRANSFORMAÇÃO ---
 
 (defn extrair-primeiro-nome [nome-completo]
   (let [s (str nome-completo)]
     (when-not (str/blank? s)
-      (first (str/split s #"\s+")))))
+      (let [partes (str/split s #"\s+")]
+        (if (seq partes)
+          (first partes)
+          s)))))
 
 (defn padronizar-telefone [telefone-str]
   (let [s (str telefone-str)]
@@ -43,7 +47,11 @@
 (defn parece-nome? [valor]
   (let [s (str/trim (str valor))]
     (and (not (str/blank? s))
-         (re-matches #"^[\p{L}\s\.]+$" s)
+         ;; Verificar se contém pelo menos uma letra
+         (re-find #"[a-zA-Z]" s)
+         ;; Não deve começar com +, (, ou dígitos (para evitar telefones)
+         (not (re-matches #"^[\+\(\d].*" s))
+         ;; Deve ter pelo menos 3 caracteres
          (> (count s) 3))))
 
 (defn contem-keyword-carro? [valor]
@@ -67,9 +75,17 @@
                         (->> scores
                              (map-indexed vector)
                              (apply max-key #(get-in % [1 tipo]))
-                             first))]
+                             first))
+        ;; Para nome, vamos priorizar colunas mais à esquerda (geralmente o nome do cliente vem antes)
+        find-best-nome-idx (fn []
+                             (->> scores
+                                  (map-indexed vector)
+                                  (filter #(> (get-in % [1 :nome]) 0.5)) ; Score mínimo para ser considerado nome
+                                  (sort-by first) ; Ordena por índice (prioriza colunas à esquerda)
+                                  first
+                                  first))]
     {:telefone (find-best-idx :telefone)
-     :primeiro-nome (find-best-idx :nome)
+     :primeiro-nome (or (find-best-nome-idx) (find-best-idx :nome))
      :modelo-carro (find-best-idx :carro)}))
 
 (defn solicitar-indices-manual []
@@ -100,6 +116,16 @@
                                 doall))
           dados-brutos (if tem-cabecalho? (rest todos-os-dados) todos-os-dados)]
 
+      ;; DEBUG: Mostrar estrutura dos dados
+      (println "\n=== DEBUG: Estrutura dos dados ===")
+      (println "Total de linhas (incluindo cabeçalho):" (count todos-os-dados))
+      (println "Primeira linha (cabeçalho):")
+      (println (first todos-os-dados))
+      (println "Segunda linha (primeiro registro):")
+      (println (second todos-os-dados))
+      (println "Número de colunas:" (count (first todos-os-dados)))
+      (println "=== FIM DEBUG ===\n")
+
       (if (empty? dados-brutos)
         (println "\nA planilha está vazia ou contém apenas o cabeçalho. Nenhum dado para processar.")
         (do
@@ -123,16 +149,36 @@
 
             (println (str "Índices a serem utilizados: " indices))
 
-            (let [dados-processados (map (fn [linha]
-                                           {:telefone (padronizar-telefone (get linha (:telefone indices)))
-                                            :primeiro-nome (extrair-primeiro-nome (get linha (:primeiro-nome indices)))
-                                            :modelo-carro (simplificar-modelo (get linha (:modelo-carro indices)))})
-                                         dados-brutos)
-                  cabecalho [:telefone :primeiro-nome :modelo-carro]
-                  linhas (map (apply juxt cabecalho) dados-processados)]
+            ;; Processar os dados linha por linha
+            (let [linhas-processadas (for [linha dados-brutos]
+                                       (let [telefone-raw (nth linha (:telefone indices) nil)
+                                             nome-raw (nth linha (:primeiro-nome indices) nil)
+                                             modelo-raw (nth linha (:modelo-carro indices) nil)
+                                             
+                                             ;; Extrair apenas o primeiro nome
+                                             nome-completo (str nome-raw)
+                                             primeiro-nome (if (str/blank? nome-completo)
+                                                            ""
+                                                            (first (str/split nome-completo #"\s+")))
+                                             
+                                             ;; Processar telefone e modelo
+                                             telefone (padronizar-telefone telefone-raw)
+                                             modelo (simplificar-modelo modelo-raw)]
+                                         
+                                         ;; DEBUG: Mostrar processamento das primeiras 3 linhas
+                                         (when (< (.indexOf dados-brutos linha) 3)
+                                           (println (str "Linha " (.indexOf dados-brutos linha) ":"))
+                                           (println (str "  Nome completo: " nome-completo))
+                                           (println (str "  Primeiro nome: " primeiro-nome))
+                                           (println (str "  Telefone: " telefone))
+                                           (println (str "  Modelo: " modelo)))
+                                         
+                                         ;; Retornar a linha processada
+                                         [telefone primeiro-nome modelo]))]
 
+              ;; Escrever o arquivo CSV
               (with-open [writer (io/writer arquivo-saida)]
-                (csv/write-csv writer linhas))
+                (csv/write-csv writer linhas-processadas))
 
               (println (str "\nArquivo \"" arquivo-saida "\" criado com sucesso!")))))))
 
