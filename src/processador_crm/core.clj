@@ -6,27 +6,28 @@
   (:gen-class))
 
 ;; --- ETAPA 1: CONFIGURAÇÃO ---
-(def arquivo-entrada "base_teste.xlsx") ; Pode ser a sua base sem títulos
-(def arquivo-saida "saida_para_crm_inferida.csv")
+(def arquivo-entrada "base_teste.xlsx")
+(def arquivo-saida "saida_para_crsm_inferida.csv")
 
-;; O mapa de modelos agora serve como um dicionário para o nosso detetive
 (def mapa-modelos
   {"strada" "Strada", "onix" "Onix", "gol" "Gol", "hb20" "HB20",
    "compass" "Compass", "kwid" "Kwid", "t-cross" "T-Cross", "jeep" "Jeep",
    "fiat" "Fiat", "chevrolet" "Chevrolet", "vw" "VW", "renault" "Renault"})
 
-;; --- ETAPA 2: FUNÇÕES DE TRANSFORMAÇÃO (as mesmas de antes) ---
+;; --- ETAPA 2: FUNÇÕES DE TRANSFORMAÇÃO ---
 
 (defn extrair-primeiro-nome [nome-completo]
-  (when (and nome-completo (not (str/blank? nome-completo)))
-    (first (str/split (str nome-completo) #"\s+"))))
+  (let [s (str nome-completo)]
+    (when-not (str/blank? s)
+      (first (str/split s #"\s+")))))
 
 (defn padronizar-telefone [telefone-str]
-  (when (and telefone-str (not (str/blank? telefone-str)))
-    (str/replace (str telefone-str) #"[^\d]" "")))
+  (let [s (str telefone-str)]
+    (when-not (str/blank? s)
+      (str/replace s #"[^\d]" ""))))
 
 (defn simplificar-modelo [descricao]
-  (let [descricao-lower (some-> descricao str/lower)]
+  (let [descricao-lower (some-> (str descricao) str/lower-case)]
     (if descricao-lower
       (or (some (fn [[chave valor]] (when (str/includes? descricao-lower chave) valor))
                 mapa-modelos)
@@ -35,37 +36,33 @@
 
 ;; --- ETAPA 3: OS DETETIVES (HEURÍSTICAS) ---
 
-;; Detetive 1: Um valor se parece com um telefone?
 (defn parece-telefone? [valor]
   (let [limpo (padronizar-telefone valor)]
-    (and limpo (<= 10 (count limpo) 13)))) ; Telefones no Brasil têm de 10 a 13 dígitos (com +55)
+    (and limpo (<= 10 (count limpo) 13))))
 
-;; Detetive 2: Um valor se parece com um nome?
 (defn parece-nome? [valor]
-  (and (string? valor)
-       (re-matches #"^[a-zA-ZÀ-ú\s\.]+$" valor) ; Letras, acentos, espaços, pontos
-       (> (count (str/split valor #"\s+")) 1))) ; Tende a ter mais de uma palavra
+  (let [s (str/trim (str valor))]
+    (and (not (str/blank? s))
+         (re-matches #"^[\p{L}\s\.]+$" s)
+         (> (count s) 3))))
 
-;; Detetive 3: Um valor contém uma palavra-chave de carro?
 (defn contem-keyword-carro? [valor]
-  (let [descricao-lower (some-> valor str/lower)]
+  (let [descricao-lower (some-> valor str/lower-case)]
     (and descricao-lower
          (some #(str/includes? descricao-lower (key %)) mapa-modelos))))
 
-;; Função que analisa uma coluna inteira e retorna uma pontuação de 0.0 a 1.0
 (defn score-coluna [funcao-detetive coluna]
-  (let [amostra (take 50 coluna) ; Analisa no máximo 50 itens para ser rápido
+  (let [amostra (take 50 coluna)
         acertos (count (filter funcao-detetive amostra))]
-    (/ acertos (double (count amostra)))))
+    (if (empty? amostra)
+      0.0
+      (/ acertos (double (count amostra))))))
 
-;; Cérebro da operação: encontra o índice da melhor coluna para cada tipo
 (defn identificar-indices-auto [colunas]
   (let [scores (for [coluna colunas]
                  {:telefone (score-coluna parece-telefone? coluna)
                   :nome (score-coluna parece-nome? coluna)
                   :carro (score-coluna contem-keyword-carro? coluna)})
-
-        ;; Encontra o índice da coluna com a maior pontuação para cada tipo
         find-best-idx (fn [tipo]
                         (->> scores
                              (map-indexed vector)
@@ -86,53 +83,61 @@
      :primeiro-nome (ler-indice "Primeiro Nome")
      :modelo-carro (ler-indice "Modelo do Carro")}))
 
-
-;; --- ETAPA 4: LÓGICA PRINCIPAL ADAPTADA ---
+;; --- ETAPA 4: LÓGICA PRINCIPAL CORRIGIDA ---
 
 (defn -main [& args]
   (try
     (println "Bem-vindo ao Processador de CRM!")
-    (println "Escolha o modo de operação:")
-    (println "1. Automático (detectar colunas)")
-    (println "2. Manual (informar colunas)")
+    (println "A sua planilha contém uma linha de cabeçalho? (s/n)")
     (print "Opção: ")
     (flush)
+    (let [tem-cabecalho? (= (str/lower-case (read-line)) "s")
+          ;; Carrega o workbook e extrai os dados da primeira planilha
+          todos-os-dados (let [workbook (ss/load-workbook arquivo-entrada)]
+                           (->> (first (ss/sheet-seq workbook))
+                                (ss/row-seq)
+                                (map (fn [row] (->> (ss/cell-seq row) (map ss/read-cell) doall)))
+                                doall))
+          dados-brutos (if tem-cabecalho? (rest todos-os-dados) todos-os-dados)]
 
-    (let [modo (read-line)
-          ;; Lê a planilha sem assumir cabeçalho
-          dados-brutos (->> (ss/load-workbook arquivo-entrada)
-                            (ss/select-sheet (first (ss/sheet-names *1)))
-                            (ss/read-sheet-data))
-          ;; Transpõe os dados para analisar as colunas
-          colunas (apply mapv vector dados-brutos)
+      (if (empty? dados-brutos)
+        (println "\nA planilha está vazia ou contém apenas o cabeçalho. Nenhum dado para processar.")
+        (do
+          (println "\nEscolha o modo de operação:")
+          (println "1. Automático (detectar colunas)")
+          (println "2. Manual (informar colunas)")
+          (print "Opção: ")
+          (flush)
 
-          ;; Escolhe a estratégia de identificação de índices
-          indices (case modo
-                    "1" (let [indices-auto (identificar-indices-auto colunas)]
-                          (println (str "\nÍndices inferidos automaticamente: " indices-auto))
-                          indices-auto)
-                    "2" (solicitar-indices-manual)
-                    (println "Opção inválida. Usando modo automático por padrão."
-                             (let [indices-auto (identificar-indices-auto colunas)]
-                               (println (str "\nÍndices inferidos automaticamente: " indices-auto))
-                               indices-auto)))]
+          (let [modo (read-line)
+                colunas (apply mapv vector dados-brutos)
+                indices (case modo
+                          "1" (let [indices-auto (identificar-indices-auto colunas)]
+                                (println (str "\nÍndices inferidos automaticamente: " indices-auto))
+                                indices-auto)
+                          "2" (solicitar-indices-manual)
+                          (do (println "Opção inválida. Usando modo automático por padrão.")
+                              (let [indices-auto (identificar-indices-auto colunas)]
+                                (println (str "\nÍndices inferidos automaticamente: " indices-auto))
+                                indices-auto)))]
 
-      (println (str "Índices a serem utilizados: " indices))
+            (println (str "Índices a serem utilizados: " indices))
 
-      ;; Processa os dados brutos usando os índices descobertos
-      (let [dados-processados (map (fn [linha]
-                                     {:telefone (padronizar-telefone (get linha (:telefone indices)))
-                                      :primeiro-nome (extrair-primeiro-nome (get linha (:primeiro-nome indices)))
-                                      :modelo-carro (simplificar-modelo (get linha (:modelo-carro indices)))})
-                                   dados-brutos)
+            (let [dados-processados (map (fn [linha]
+                                           {:telefone (padronizar-telefone (get linha (:telefone indices)))
+                                            :primeiro-nome (extrair-primeiro-nome (get linha (:primeiro-nome indices)))
+                                            :modelo-carro (simplificar-modelo (get linha (:modelo-carro indices)))})
+                                         dados-brutos)
+                  cabecalho [:telefone :primeiro-nome :modelo-carro]
+                  linhas (map (apply juxt cabecalho) dados-processados)]
 
-          cabecalho [:telefone :primeiro-nome :modelo-carro]
-          linhas (map (apply juxt cabecalho) dados-processados)]
+              (with-open [writer (io/writer arquivo-saida)]
+                (csv/write-csv writer linhas))
 
-      (with-open [writer (io/writer arquivo-saida)]
-        (csv/write-csv writer (cons (map name cabecalho) linhas)))
+              (println (str "\nArquivo \"" arquivo-saida "\" criado com sucesso!")))))))
 
-      (println (str "\nArquivo '" arquivo-saida "' criado com sucesso!")))
-
+    (catch java.io.FileNotFoundException e
+      (println (str "\nERRO: Arquivo de entrada \"" arquivo-entrada "\" não encontrado.")))
     (catch Exception e
-      (println (str "Ocorreu um erro inesperado: " (.getMessage e) "\n" (pr-str e))))))
+      (println (str "\nOcorreu um erro inesperado: " (.getMessage e)))
+      (.printStackTrace e))))
