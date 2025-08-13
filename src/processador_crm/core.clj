@@ -10,32 +10,69 @@
 (def arquivo-saida "saida_para_crsm_inferida.csv")
 
 (def mapa-modelos
-  {"strada" "Strada", "onix" "Onix", "gol" "Gol", "hb20" "HB20",
-   "compass" "Compass", "kwid" "Kwid", "t-cross" "T-Cross", "jeep" "Jeep",
-   "fiat" "Fiat", "chevrolet" "Chevrolet", "vw" "VW", "renault" "Renault",
-   "montana" "Montana", "cruze" "Cruze", "spin" "Spin", "tracker" "Tracker"})
+  {"agile" "Agile", "amarok" "Amarok", "argo" "Argo", "astra" "Astra",
+ "audi" "Audi", "blazer" "Blazer", "bmw" "BMW", "bolt" "Bolt",
+ "camaro" "Camaro", "captiva" "Captiva", "captur" "Captur", "celta" "Celta",
+ "chevrolet" "Chevrolet", "citroen" "Citroen", "city" "City", "civic" "Civic",
+ "classic" "Classic", "cobalt" "Cobalt", "compass" "Compass", "corolla" "Corolla",
+ "corsa" "Corsa", "creta" "Creta", "cruze" "Cruze", "duster" "Duster",
+ "ecosport" "EcoSport", "equinox" "Equinox", "etios" "Etios", "fiat" "Fiat",
+ "fit" "Fit", "ford" "Ford", "fox" "Fox", "gol" "Gol", "hb20" "HB20",
+ "hilux" "Hilux", "honda" "Honda", "hr-v" "HR-V", "hyundai" "Hyundai",
+ "jeep" "Jeep", "jetta" "Jetta", "ka" "Ka", "kicks" "Kicks", "kwid" "Kwid",
+ "logan" "Logan", "march" "March", "mercedes" "Mercedes", "meriva" "Meriva",
+ "mitsubishi" "Mitsubishi", "mobi" "Mobi", "montana" "Montana", "monatana" "Montana", "montana ls 1.4" "Montana", "monatana ls 1.4" "Montana", "monza" "Monza",
+ "nissan" "Nissan", "omega" "Omega", "onix" "Onix", "onix-plus" "Onix Plus",
+ "peugeot" "Peugeot", "polo" "Polo", "prisma" "Prisma", "ranger" "Ranger",
+ "renegade" "Renegade", "renault" "Renault", "s10" "S10" "s-10" "S-10" "S10 DIE 4X4" "s10 DIE 4X4", "sandero" "Sandero",
+ "saveiro" "Saveiro", "silverado" "Silverado", "sonic" "Sonic", "spin" "Spin",
+ "strada" "Strada", "subaru" "Subaru", "t-cross" "T-Cross", "toro" "Toro",
+ "toyota" "Toyota", "tracker" "Tracker", "trailblazer" "Trailblazer", "uno" "Uno",
+ "vectra" "Vectra", "versa" "Versa", "virtus" "Virtus", "volvo" "Volvo",
+ "vw" "VW", "yaris" "Yaris", "zafira" "Zafira"})
 
 ;; --- ETAPA 2: FUNÇÕES DE TRANSFORMAÇÃO ---
 
 (defn extrair-primeiro-nome [nome-completo]
-  (let [s (str nome-completo)]
-    (when-not (str/blank? s)
-      (let [partes (str/split s #"\s+")]
-        (if (seq partes)
-          (first partes)
-          s)))))
+  (println (str "DEBUG >>> Recebido: '" nome-completo "'"))
+
+  (when-let [nome-limpo (not-empty (str/trim (str nome-completo)))]
+    ;; --- A MUDANÇA CRÍTICA ESTÁ AQUI ---
+    ;; Trocamos #"\s+" por #"\p{Z}+" que é um regex universal para qualquer tipo de espaço.
+    (let [partes (str/split nome-limpo #"\p{Z}+") 
+          resultado (first partes)]
+
+      ;; Novo debug para vermos o resultado da divisão
+      (println (str "DEBUG PARTES: " (pr-str partes)))
+
+      (println (str "DEBUG <<< Retornando: '" resultado "'"))
+      resultado)))
+
+(defn remover-zero-ddd [telefone]
+  (when telefone
+    (if (and (>= (count telefone) 3)
+             (= (subs telefone 0 1) "0"))
+      ;; Se o telefone começa com 0 e tem pelo menos 3 dígitos, remove o 0 inicial
+      (subs telefone 1)
+      ;; Caso contrário, retorna o telefone original
+      telefone)))
 
 (defn padronizar-telefone [telefone-str]
   (let [s (str telefone-str)]
     (when-not (str/blank? s)
-      (str/replace s #"[^\d]" ""))))
+      ;; Primeiro remove todos os caracteres não numéricos
+      (let [apenas-numeros (str/replace s #"[^\d]" "")]
+        ;; Depois remove o zero do DDD, se existir
+        (remover-zero-ddd apenas-numeros)))))
 
 (defn simplificar-modelo [descricao]
-  (let [descricao-lower (some-> (str descricao) str/lower-case)]
+  (let [descricao-str (str descricao)
+        descricao-lower (some-> descricao-str str/lower-case)]
     (if descricao-lower
       (or (some (fn [[chave valor]] (when (str/includes? descricao-lower chave) valor))
                 mapa-modelos)
-          "Modelo não identificado")
+          ;; Se não encontrou no mapa, retorna o nome original da planilha
+          descricao-str)
       nil)))
 
 ;; --- ETAPA 3: OS DETETIVES (HEURÍSTICAS) ---
@@ -157,9 +194,7 @@
                                              
                                              ;; Extrair apenas o primeiro nome
                                              nome-completo (str nome-raw)
-                                             primeiro-nome (if (str/blank? nome-completo)
-                                                            ""
-                                                            (first (str/split nome-completo #"\s+")))
+                                             primeiro-nome (extrair-primeiro-nome nome-completo)
                                              
                                              ;; Processar telefone e modelo
                                              telefone (padronizar-telefone telefone-raw)
@@ -176,9 +211,15 @@
                                          ;; Retornar a linha processada
                                          [telefone primeiro-nome modelo]))]
 
-              ;; Escrever o arquivo CSV
-              (with-open [writer (io/writer arquivo-saida)]
-                (csv/write-csv writer linhas-processadas))
+              ;; Escrever o arquivo CSV aplicando extração de primeiro nome com Java
+              (let [linhas-finais (for [[telefone nome-completo modelo] linhas-processadas]
+                                    (let [nome-java-str (str nome-completo)
+                                          primeiro-nome (if (.contains nome-java-str " ")
+                                                         (.substring nome-java-str 0 (.indexOf nome-java-str " "))
+                                                         nome-java-str)]
+                                      [telefone primeiro-nome modelo]))]
+                (with-open [writer (io/writer arquivo-saida)]
+                  (csv/write-csv writer linhas-finais)))
 
               (println (str "\nArquivo \"" arquivo-saida "\" criado com sucesso!")))))))
 
